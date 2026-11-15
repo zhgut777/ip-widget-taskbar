@@ -61,9 +61,21 @@ SHADOW = 20           # запас вокруг карточки под тень
 RADIUS = 14           # радиус скругления
 BAR_H = 34            # высота плашки на панели задач
 BAR_MAX_W = 300       # предельная ширина плашки, чтобы не заезжать на значки
-REFRESH_MIN = 10      # период автообновления, минут
+REFRESH_MIN = 10      # период автообновления по умолчанию, минут
 WATCH_MS = 1000       # период слежения за панелью задач, мс
 RENDER_CACHE_MAX = 8  # сколько готовых картинок держать в кэше
+
+# варианты периода автообновления: (минуты, подпись в меню); 0 — только вручную
+INTERVAL_OPTIONS = (
+    (1, "Каждую минуту"),
+    (5, "Каждые 5 минут"),
+    (10, "Каждые 10 минут"),
+    (30, "Каждые 30 минут"),
+    (60, "Каждый час"),
+    (0, "Только вручную"),
+)
+
+DEBUG = os.environ.get("IPW_DEBUG") == "1"
 
 DEFAULT_CONFIG = {
     "mode": "bar",
@@ -652,6 +664,7 @@ TPM_RETURNCMD, TPM_RIGHTBUTTON = 0x0100, 0x0002
 TPM_BOTTOMALIGN = 0x0020
 GWL_EXSTYLE = -20
 MF_STRING, MF_SEPARATOR, MF_CHECKED, MF_GRAYED = 0x000, 0x800, 0x008, 0x001
+MF_POPUP = 0x010
 CF_UNICODETEXT, GMEM_MOVEABLE = 13, 0x0002
 ERROR_ALREADY_EXISTS = 183
 
@@ -1096,6 +1109,7 @@ class IpWidget:
     ID_REFRESH, ID_COPY_IP, ID_COPY_ALL = 1, 2, 3
     ID_TOPMOST, ID_AUTOSTART, ID_EXIT = 10, 11, 99
     ID_MODE = 12
+    ID_INTERVAL = 20
 
     def __init__(self) -> None:
         self.cfg = load_config()
@@ -1116,6 +1130,7 @@ class IpWidget:
         self._bar_layout = None
         self._pending_focus = None
         self._last_app_fg = None
+        self._fetch_manual = False
         self._lock = threading.Lock()
         self._pending = None
         self._image = None
@@ -1158,7 +1173,9 @@ class IpWidget:
         self._render_and_show()
         self._set_visible(True)
         self._update_owner()
-        user32.SetTimer(self.hwnd, 1, int(self.cfg.get("interval_min", REFRESH_MIN) * 60_000), None)
+        interval = int(self.cfg.get("interval_min", REFRESH_MIN) or 0)
+        if interval > 0:
+            user32.SetTimer(self.hwnd, 1, interval * 60_000, None)
         user32.SetTimer(self.hwnd, 2, WATCH_MS, None)   # слежение за панелью задач
         self.refresh()
 
@@ -1386,15 +1403,38 @@ class IpWidget:
             self._watch()
             self._enforce_top()
 
+    def _set_interval(self, minutes: int) -> None:
+        """Меняет период автообновления из меню и перезапускает таймер."""
+        minutes = max(0, int(minutes))
+        self.cfg["interval_min"] = minutes
+        save_config(self.cfg)
+        user32.KillTimer(self.hwnd, 1)
+        if minutes > 0:
+            user32.SetTimer(self.hwnd, 1, minutes * 60_000, None)
+        if DEBUG:
+            log(f"interval: {minutes} мин")
+
     def _save_position(self) -> None:
         if self.mode == "card" and self._pos:
             self.cfg["x"], self.cfg["y"] = int(self._pos[0]), int(self._pos[1])
             save_config(self.cfg)
 
     # -- данные ------------------------------------------------------------
-    def refresh(self) -> None:
+    def refresh(self, manual: bool = False) -> None:
+        """Обновляет данные.
+
+        manual=True (клик, пункт меню) — с надписью «Определяю…».
+        Автообновление по таймеру идёт молча: пока не пришли новые данные,
+        виджет не меняется.
+        """
         if self._busy:
             return
+        self._fetch_manual = manual
+        if manual:
+            self.state["status"] = "loading"
+            self._render_and_show()
+        if DEBUG:
+            log("refresh: " + ("manual" if manual else "auto"))
         self._busy = True
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -1409,6 +1449,10 @@ class IpWidget:
             data["updated"] = time.strftime("%H:%M")
         except Exception as exc:
             log("fetch:\n" + traceback.format_exc())
+            # тихое автообновление: не сбрасываем уже показанные данные
+            if not self._fetch_manual and self.state.get("status") == "ok":
+                self._busy = False
+                return
             data = {"status": "error", "error": _short_error(exc), "updated": time.strftime("%H:%M")}
         with self._lock:
             self._pending = data
@@ -1491,6 +1535,16 @@ class IpWidget:
                 mode_label = ("Большая карточка на рабочем столе" if self.mode == "bar"
                               else "Прикрепить к панели задач")
                 user32.AppendMenuW(menu, MF_STRING, self.ID_REFRESH, "Обновить")
+                # подменю с периодом автообновления
+                intervals = user32.CreatePopupMenu()
+                if intervals:
+                    current_interval = int(self.cfg.get("interval_min", REFRESH_MIN) or 0)
+                    for index, (minutes, label) in enumerate(INTERVAL_OPTIONS):
+                        checked = MF_CHECKED if minutes == current_interval else 0
+                        user32.AppendMenuW(intervals, MF_STRING | checked,
+                                           self.ID_INTERVAL + index, label)
+                    # DestroyMenu(menu) уничтожает и вложенные подменю
+                    user32.AppendMenuW(menu, MF_POPUP | MF_STRING, intervals, "Автообновление")
                 user32.AppendMenuW(menu, MF_STRING, self.ID_COPY_IP, "Копировать IP")
                 user32.AppendMenuW(menu, MF_STRING, self.ID_COPY_ALL, "Копировать страну и IP")
                 user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
@@ -1534,9 +1588,9 @@ class IpWidget:
     def _menu_action(self, cmd: int) -> None:
         try:
             if cmd == self.ID_REFRESH:
-                self.state["status"] = "loading"
-                self._render_and_show()
-                self.refresh()
+                self.refresh(manual=True)
+            elif self.ID_INTERVAL <= cmd < self.ID_INTERVAL + len(INTERVAL_OPTIONS):
+                self._set_interval(INTERVAL_OPTIONS[cmd - self.ID_INTERVAL][0])
             elif cmd == self.ID_COPY_IP:
                 _copy_clipboard(self.state.get("ip", ""))
             elif cmd == self.ID_COPY_ALL:
@@ -1690,9 +1744,7 @@ class IpWidget:
         return pt.x, pt.y
 
     def _start_refresh(self) -> None:
-        self.state["status"] = "loading"
-        self._render_and_show()
-        self.refresh()
+        self.refresh(manual=True)
 
     def _hover_ready(self) -> bool:
         cx, cy = self._cursor()
