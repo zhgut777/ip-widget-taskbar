@@ -1,0 +1,12 @@
+# артефакты сборки
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+
+# локальные файлы
+*.log
+tmp*
