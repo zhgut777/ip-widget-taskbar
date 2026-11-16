@@ -11,7 +11,7 @@ from .netinfo import IpInfo
 # Паузы перед повтором после сбоя, секунды; дальше — раз в 5 минут, пока не заработает.
 RETRY_DELAYS = (15, 30, 60, 120, 300)
 # Сколько секунд после смены IP/страны плашка остаётся подсвеченной.
-CHANGE_HIGHLIGHT_S = 45
+CHANGE_HIGHLIGHT_S = 10
 
 
 class Status(str, Enum):

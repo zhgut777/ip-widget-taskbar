@@ -25,14 +25,17 @@ APP_NETCHANGE = w.WM_APP + 2
 APP_LAYOUT = w.WM_APP + 3
 
 # --- таймеры ----------------------------------------------------------------
-T_REFRESH, T_WATCH, T_RETRY, T_RAISE, T_FOCUS, T_NETEVENT, T_TIP, T_CHANGED, T_TRIM = range(1, 10)
+(T_REFRESH, T_WATCH, T_RETRY, T_RAISE, T_FOCUS, T_NETEVENT, T_TIP, T_CHANGED, T_TRIM,
+ T_RECHECK) = range(1, 11)
 
 WATCH_MS = 1000            # слежение за панелью задач
 TRIM_DELAY_MS = 6000       # через сколько после работы отдать неиспользуемую память системе
 TIP_DELAY_MS = 450         # через сколько после наведения показать подсказку
-NET_DEBOUNCE_MS = 4000     # ждём, пока сеть «успокоится», прежде чем спрашивать IP
+NET_DEBOUNCE_MS = 1200     # ждём, пока сеть «успокоится», прежде чем спрашивать IP
 RESUME_DELAY_MS = 6000     # после выхода из сна даём сети подняться
-MIN_EVENT_REFRESH_S = 8    # не чаще, чем раз в N секунд по событиям сети
+MIN_EVENT_REFRESH_S = 2    # не чаще, чем раз в N секунд по событиям сети
+RECHECK_DELAY_MS = 3000    # после смены сети IP мог ещё не смениться — проверим ещё раз
+RECHECK_COUNT = 2
 RENDER_CACHE_MAX = 12
 
 # --- идентификаторы пунктов меню ---------------------------------------------
@@ -73,6 +76,7 @@ class Widget:
         self._fetcher = netinfo.Fetcher()
         self._changed_until = 0.0
         self._last_event_fetch = 0.0
+        self._rechecks_left = 0
 
         # окно и отрисовка
         self.hwnd = None
@@ -228,7 +232,15 @@ class Widget:
             return
         kind, payload = result
         if kind == "ok":
-            if state.changed(self.info, payload):
+            changed = state.changed(self.info, payload)
+            if self._rechecks_left > 0:
+                if changed:
+                    self._rechecks_left = 0       # новый IP уже получен — повторы не нужны
+                else:
+                    # Сразу после смены сети маршрут мог ещё не переключиться: IP тот же.
+                    self._rechecks_left -= 1
+                    w.SetTimer(self.hwnd, T_RECHECK, RECHECK_DELAY_MS, None)
+            if changed:
                 self._changed_until = time.monotonic() + state.CHANGE_HIGHLIGHT_S
                 w.SetTimer(self.hwnd, T_CHANGED, state.CHANGE_HIGHLIGHT_S * 1000 + 200, None)
                 log.info("IP или страна изменились: %s -> %s", self.info and self.info.cc, payload.cc)
@@ -275,6 +287,7 @@ class Widget:
             return
         self._last_event_fetch = time.monotonic()
         log.info("сеть изменилась — обновляю данные")
+        self._rechecks_left = RECHECK_COUNT
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -787,6 +800,9 @@ class Widget:
             self.refresh()
         elif timer == T_NETEVENT:
             self._network_settled()
+        elif timer == T_RECHECK:
+            w.KillTimer(hwnd, T_RECHECK)
+            self.refresh()
         elif timer == T_TIP:
             w.KillTimer(hwnd, T_TIP)
             self._show_tip()

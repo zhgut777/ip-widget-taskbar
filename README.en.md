@@ -17,7 +17,7 @@ drawn with Win32 and Pillow.
 - **Refreshes when it matters**: on a timer (1/5/10/30 min, hourly or manual) and
   **immediately when the network changes** (VPN on/off, Wi-Fi switch, resume from
   sleep). After a failure it retries by itself (15 → 30 → 60 → 120 → 300 s).
-- **Change alerts**: the pill turns amber for 45 s when the IP or country changes.
+- **Change alerts**: the pill turns amber for 10 s when the IP or country changes.
   Set an "expected country" and it turns red whenever the country differs — handy to
   notice a dropped VPN.
 - **Never loses data**: if a refresh fails, the last values stay but dim, and the
