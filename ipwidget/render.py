@@ -392,8 +392,10 @@ def render_tip(data: TipData, scale: float, dark: bool = True) -> Image.Image:
     # --- строки «подпись — значение» -----------------------------------------
     if data.rows:
         y += _px(10, s)
-        ImageDraw.Draw(out).line((pad, y - _px(5, s), w - pad, y - _px(5, s)), fill=th.divider,
-                                 width=max(1, _px(1, s)))
+        # Линию кладём слоем через alpha_composite: ImageDraw.line() с полупрозрачным
+        # цветом не смешивает, а заменяет пиксели — получалась «дырка» в плашке.
+        ly, lh = y - _px(5, s), max(1, _px(1, s))
+        out.alpha_composite(Image.new("RGBA", (w - 2 * pad, lh), th.divider), (pad, ly))
         for label, value, mono in data.rows:
             base = y + _px(13, s)
             draw_text(out, (pad, base), label, f_label, th.sub)

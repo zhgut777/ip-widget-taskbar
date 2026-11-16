@@ -126,6 +126,18 @@ class TipTest(unittest.TestCase):
                 self.assertGreater(img.height, 150)
         self.assertGreater(render.render_tip(render.build_tip(None, View(status=Status.ERROR), "x"), 1.0).height, 60)
 
+    def test_tip_has_no_transparent_stripes(self):
+        """Разделитель под заголовком раньше «пробивал» плашку насквозь (полупрозрачная
+        линия заменяла пиксели вместо смешивания) — внутри плашки фон везде плотный."""
+        for dark in (True, False):
+            for scale in (1.0, 2.0):
+                img = render.render_tip(render.build_tip(self.info(), ok_view()), scale, dark)
+                alpha = img.getchannel("A")
+                m = round(12 * scale)                       # отступ от скруглённых краёв
+                for y in range(m, img.height - m):
+                    lowest = min(alpha.getpixel((x, y)) for x in range(m, img.width - m, 7))
+                    self.assertGreaterEqual(lowest, 200, f"прозрачная полоса в строке {y} (dark={dark}, x{scale})")
+
 
 if __name__ == "__main__":
     unittest.main()
