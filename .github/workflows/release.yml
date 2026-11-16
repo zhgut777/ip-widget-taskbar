@@ -1,0 +1,36 @@
+name: Release
+
+# Публикует IP-widget.exe при пуше тега вида v2.0.0.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write        # создать релиз
+  id-token: write        # подтверждение происхождения сборки (attestation)
+  attestations: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+      - name: Сборка (тесты запускаются внутри build.ps1)
+        shell: powershell
+        run: ./build.ps1
+      - name: Подтверждение происхождения
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/IP-widget.exe
+      - name: Релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/IP-widget.exe
+            dist/IP-widget.exe.sha256
+          generate_release_notes: true
