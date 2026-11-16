@@ -16,6 +16,25 @@ PERSONALIZE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize
 
 
 # --------------------------------------------------------------------------
+#  Память
+# --------------------------------------------------------------------------
+
+def trim_memory() -> None:
+    """Сборка мусора и сброс рабочего набора: страницы, которые виджет сейчас не
+    трогает, возвращаются системе (подгрузятся сами, если понадобятся)."""
+    import gc
+    gc.collect()
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.SetProcessWorkingSetSize.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+        kernel32.SetProcessWorkingSetSize(kernel32.GetCurrentProcess(),
+                                          ctypes.c_size_t(-1).value, ctypes.c_size_t(-1).value)
+    except (OSError, AttributeError):
+        log.debug("не удалось сбросить рабочий набор", exc_info=True)
+
+
+# --------------------------------------------------------------------------
 #  Масштаб экрана
 # --------------------------------------------------------------------------
 

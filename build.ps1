@@ -23,7 +23,13 @@ if (-not $SkipTests) {
 & $py packaging\make_version_file.py packaging\version_info.txt
 if ($LASTEXITCODE -ne 0) { throw "Не удалось создать файл версии" }
 
-& $py -m PyInstaller --noconfirm --clean --onefile --windowed `
+# Лишнее не тащим в exe: меньше размер и быстрее распаковка при запуске.
+$exclude = @("tkinter", "unittest", "pydoc", "doctest", "test", "setuptools", "pkg_resources",
+             "distutils", "numpy", "PIL.ImageTk", "PIL._imagingtk", "PIL.ImageQt")
+$excludeArgs = $exclude | ForEach-Object { "--exclude-module"; $_ }
+
+& $py -m PyInstaller --noconfirm --clean --onefile --windowed --optimize 2 `
+    @excludeArgs `
     --name "IP-widget" `
     --icon "icon.ico" `
     --version-file "packaging\version_info.txt" `

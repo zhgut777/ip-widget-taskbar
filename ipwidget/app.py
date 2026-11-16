@@ -25,9 +25,10 @@ APP_NETCHANGE = w.WM_APP + 2
 APP_LAYOUT = w.WM_APP + 3
 
 # --- таймеры ----------------------------------------------------------------
-T_REFRESH, T_WATCH, T_RETRY, T_RAISE, T_FOCUS, T_NETEVENT, T_TIP, T_CHANGED = range(1, 9)
+T_REFRESH, T_WATCH, T_RETRY, T_RAISE, T_FOCUS, T_NETEVENT, T_TIP, T_CHANGED, T_TRIM = range(1, 10)
 
 WATCH_MS = 1000            # слежение за панелью задач
+TRIM_DELAY_MS = 6000       # через сколько после работы отдать неиспользуемую память системе
 TIP_DELAY_MS = 450         # через сколько после наведения показать подсказку
 NET_DEBOUNCE_MS = 4000     # ждём, пока сеть «успокоится», прежде чем спрашивать IP
 RESUME_DELAY_MS = 6000     # после выхода из сна даём сети подняться
@@ -160,6 +161,7 @@ class Widget:
         system.apply_menu_theme(system.apps_use_light())
         self._watch()
         self._render_and_show()
+        self._schedule_trim()
         return True
 
     def _recreate(self, hinst) -> bool:
@@ -246,9 +248,15 @@ class Widget:
                         payload.kind, delay, payload.detail)
         self._render_and_show()
         self._refresh_tip()
+        self._schedule_trim()
         if self._again:
             self._again = False
             self.refresh()
+
+    def _schedule_trim(self) -> None:
+        """После всплеска работы (запуск, ответ сети) отдаём лишнюю память системе."""
+        if self.hwnd:
+            w.SetTimer(self.hwnd, T_TRIM, TRIM_DELAY_MS, None)   # повтор сбрасывает отсчёт
 
     def _arm_interval_timer(self) -> None:
         w.KillTimer(self.hwnd, T_REFRESH)
@@ -785,6 +793,9 @@ class Widget:
         elif timer == T_CHANGED:
             w.KillTimer(hwnd, T_CHANGED)
             self._render_and_show()                 # подсветка «изменилось» закончилась
+        elif timer == T_TRIM:
+            w.KillTimer(hwnd, T_TRIM)
+            system.trim_memory()
         elif timer == T_RAISE:
             w.KillTimer(hwnd, T_RAISE)
             self._enforce_top()
