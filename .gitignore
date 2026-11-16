@@ -2,10 +2,12 @@
 build/
 dist/
 *.spec
+packaging/version_info.txt
 
 # Python
 __pycache__/
 *.pyc
+.venv/
 
 # локальные файлы
 *.log
