@@ -644,6 +644,7 @@ WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP = 0x0200, 0x0201, 0x020
 WM_MOUSELEAVE, WM_SETCURSOR, WM_APP = 0x02A3, 0x0020, 0x8000
 WM_NCHITTEST = 0x0084
 WM_SETTINGCHANGE = 0x001A
+WM_THEMECHANGED = 0x031A
 MA_NOACTIVATE = 3
 HTCLIENT = 1
 GW_HWNDPREV = 3
@@ -1093,14 +1094,44 @@ def autostart_enabled() -> bool:
         return False
 
 
-def _enable_dark_menus() -> None:
-    """Тёмные системные меню в тон карточке (недокументированный uxtheme)."""
+PERSONALIZE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+
+def _reg_int(name: str, default: int = 0) -> int:
+    """Числовое значение из ветки персонализации (0 — тёмная, 1 — светлая)."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, PERSONALIZE_KEY) as key:
+            value, _kind = winreg.QueryValueEx(key, name)
+        return int(value)
+    except Exception:
+        return default
+
+
+def _app_is_light() -> bool:
+    """Светлая тема приложений — по ней оформляются системные меню."""
+    return _reg_int("AppsUseLightTheme", 0) == 1
+
+
+def _system_is_light() -> bool:
+    """Светлая системная тема — по ней перекрашивается панель задач."""
+    return _reg_int("SystemUsesLightTheme", 0) == 1
+
+
+def _theme_signature() -> tuple[int, int]:
+    """Обе темы одной парой: при любом изменении перерисовываемся."""
+    return (_reg_int("AppsUseLightTheme", 0), _reg_int("SystemUsesLightTheme", 0))
+
+
+def _apply_menu_theme(light: bool) -> None:
+    """Системные меню в тон теме: ForceLight/ForceDark (недокументированный uxtheme)."""
     try:
         uxtheme = ctypes.WinDLL("uxtheme")
-        uxtheme[135](2)   # SetPreferredAppMode(ForceDark)
-        uxtheme[136]()    # FlushMenuThemes
+        uxtheme[135](3 if light else 2)   # SetPreferredAppMode(ForceLight / ForceDark)
+        uxtheme[136]()                    # FlushMenuThemes
     except Exception:
-        pass  # на старых сборках Windows меню останутся светлыми
+        pass  # на старых сборках Windows меню останутся по умолчанию
 
 
 class IpWidget:
@@ -1126,6 +1157,8 @@ class IpWidget:
         self._owner_tray = None
         self._bar_dark = True
         self._theme_ticks = 0
+        self._theme_sig = _theme_signature()
+        self._theme_refresh_ticks = 0
         self._render_cache: dict = {}
         self._bar_layout = None
         self._pending_focus = None
@@ -1377,14 +1410,34 @@ class IpWidget:
             log(f"watch: move {pos} (было {self._pos})")
             self._move_to(*pos)
         self._set_visible(True)
+        # Реагируем на смену тёмной/светлой темы сразу, а перерисовку повторяем
+        # несколько тиков — панель задач перекрашивается с небольшой задержкой.
+        signature = _theme_signature()
+        if signature != self._theme_sig:
+            self._theme_sig = signature
+            self._theme_refresh_ticks = 3
+        if self._theme_refresh_ticks > 0:
+            self._theme_refresh_ticks -= 1
+            self._render_cache.clear()
+            self._render_and_show()
         # раз в минуту — страховочная проверка темы панели
         # (основная реакция — на WM_SETTINGCHANGE "ImmersiveColorSet")
         self._theme_ticks += 1
         if self._theme_ticks >= 60:
             self._theme_ticks = 0
             if _taskbar_is_dark() != self._bar_dark:
+                self._theme_refresh_ticks = 2
+                self._render_cache.clear()
                 self._render_and_show()
         self._enforce_top()
+
+    def _on_theme_changed(self) -> None:
+        """Сменилась тема Windows: обновляем цвета текста, меню и кэш картинок."""
+        self._theme_sig = _theme_signature()
+        self._theme_refresh_ticks = 5
+        self._render_cache.clear()
+        _apply_menu_theme(_app_is_light())
+        self._render_and_show()
 
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
@@ -1526,6 +1579,8 @@ class IpWidget:
         cmd = 0
         try:
             self._force_foreground(previous)
+            # меню оформляем в тон текущей теме Windows
+            _apply_menu_theme(_app_is_light())
             menu = user32.CreatePopupMenu()
             if not menu:
                 return
@@ -1653,7 +1708,10 @@ class IpWidget:
                     except Exception:
                         text = None
                     if text in ("ImmersiveColorSet", "ImmersiveColorPolicySet"):
-                        self._render_and_show()
+                        self._on_theme_changed()
+                return 0
+            if msg == WM_THEMECHANGED:
+                self._on_theme_changed()
                 return 0
             if msg == WM_TIMER:
                 if int(wparam) == 2:
@@ -1779,7 +1837,7 @@ def _short_error(exc: Exception) -> str:
 #  Точка входа
 # --------------------------------------------------------------------------
 
-def _preview(out_path: str, what: str, mode: str = "card") -> None:
+def _preview(out_path: str, what: str, mode: str = "card", light: bool = False) -> None:
     demo = {"status": "ok", "ip": "203.0.113.42", "cc": "NL", "country_en": "Netherlands",
             "city": "Rotterdam", "region": "South Holland", "utc": "+01:00",
             "isp": "Snel.com B.V.", "updated": time.strftime("%H:%M")}
@@ -1788,8 +1846,11 @@ def _preview(out_path: str, what: str, mode: str = "card") -> None:
     elif what == "error":
         demo = {"status": "error", "error": "нет доступа к сети", "updated": time.strftime("%H:%M")}
     ensure_flag(demo.get("cc", ""))
-    img = render(demo, 2.0, hover=what == "ok", mode=mode, bar_dark=True)
-    background = (30, 30, 34, 255) if mode == "bar" else (46, 46, 52, 255)
+    img = render(demo, 2.0, hover=what == "ok", mode=mode, bar_dark=not light)
+    if mode == "bar":
+        background = (243, 243, 243, 255) if light else (30, 30, 34, 255)
+    else:
+        background = (46, 46, 52, 255)
     canvas = Image.new("RGBA", img.size, background)
     canvas.alpha_composite(img)
     canvas.convert("RGB").save(out_path)
@@ -1797,15 +1858,16 @@ def _preview(out_path: str, what: str, mode: str = "card") -> None:
 
 def main() -> None:
     args = sys.argv[1:]
-    _enable_dark_menus()
+    _apply_menu_theme(_app_is_light())
     try:
         if "--preview" in args:
             idx = args.index("--preview")
             out = args[idx + 1] if idx + 1 < len(args) else "preview.png"
             rest = args[idx + 2:]
             mode = "bar" if "bar" in rest else "card"
+            light = "light" in rest
             what = next((a for a in rest if a in ("ok", "loading", "error")), "ok")
-            _preview(out, what, mode)
+            _preview(out, what, mode, light)
             print("saved:", out)
             return
         IpWidget().run()
